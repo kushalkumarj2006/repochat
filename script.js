@@ -336,15 +336,20 @@ function consoleLog(msg, type = 'info') {
 // ============================================================
 // BACKEND API
 // ============================================================
-async function apiCall(endpoint, body = {}) {
+async function apiCall(endpoint, body = {}, method = 'POST') {
   const headers = { 'Content-Type': 'application/json' };
   if (SECRET_KEY) headers['api-secret'] = SECRET_KEY;
   
-  const response = await fetch(`${BACKEND_URL}${endpoint}`, {
-    method: 'POST',
+  const options = {
+    method: method,
     headers,
-    body: JSON.stringify(body)
-  });
+  };
+  
+  if (method !== 'DELETE' && body) {
+    options.body = JSON.stringify(body);
+  }
+  
+  const response = await fetch(`${BACKEND_URL}${endpoint}`, options);
   
   if (!response.ok) {
     const text = await response.text();
@@ -365,10 +370,26 @@ async function startSession() {
 async function stopColabSession() {
   if (!sessionId) return;
   try {
-    await apiCall(`/session/${sessionId}`, {});
-    consoleLog('Session stopped', 'success');
+    // Use DELETE method with the session ID in the URL path
+    const headers = { 'Content-Type': 'application/json' };
+    if (SECRET_KEY) headers['api-secret'] = SECRET_KEY;
+    
+    const response = await fetch(`${BACKEND_URL}/session/${sessionId}`, {
+      method: 'DELETE',
+      headers
+    });
+    
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`HTTP ${response.status}: ${text}`);
+    }
+    
+    const data = await response.json();
+    consoleLog('Session stopped: ' + JSON.stringify(data), 'success');
+    return data;
   } catch (e) {
     consoleLog('Session stop error: ' + e.message, 'warn');
+    throw e;
   }
 }
 
@@ -617,18 +638,45 @@ stopBtn.addEventListener('click', () => {
 endSessionBtn.addEventListener('click', async () => {
   if (!sessionId) return;
   if (!confirm('End this session? All progress will be lost.')) return;
-  await stopColabSession();
-  sessionId = null;
-  sessionBadge.style.display = 'none';
-  endSessionBtn.style.display = 'none';
-  setupPanel.classList.remove('collapsed');
-  setupStatus.textContent = '⏳ Session ended';
-  chatEnabled = false;
-  questionInput.disabled = true;
-  askFastBtn.disabled = true;
-  askSimpleBtn.disabled = true;
-  chatStatus.innerHTML = '⏳ <span class="wait">Session ended. Start again.</span>';
-  consoleLog('Session ended by user', 'warn');
+  
+  // Show loading state
+  endSessionBtn.disabled = true;
+  endSessionBtn.textContent = '⏳ Ending...';
+  chatStatus.innerHTML = '⏳ <span class="wait">Ending session...</span>';
+  
+  try {
+    // Stop the session
+    await stopColabSession();
+    
+    // Clear session state
+    sessionId = null;
+    sessionBadge.style.display = 'none';
+    endSessionBtn.style.display = 'none';
+    setupPanel.classList.remove('collapsed');
+    setupStatus.textContent = '✅ Session ended';
+    chatEnabled = false;
+    questionInput.disabled = true;
+    askFastBtn.disabled = true;
+    askSimpleBtn.disabled = true;
+    chatStatus.innerHTML = '⏳ <span class="wait">Session ended. Start again.</span>';
+    consoleLog('Session ended by user', 'warn');
+  } catch (error) {
+    // Even if the remote stop fails, clean up local state
+    consoleLog('Session stop had issues: ' + error.message, 'warn');
+    sessionId = null;
+    sessionBadge.style.display = 'none';
+    endSessionBtn.style.display = 'none';
+    setupPanel.classList.remove('collapsed');
+    setupStatus.textContent = '⚠️ Session ended (with errors)';
+    chatEnabled = false;
+    questionInput.disabled = true;
+    askFastBtn.disabled = true;
+    askSimpleBtn.disabled = true;
+    chatStatus.innerHTML = '⚠️ <span class="err">Session ended with errors</span>';
+  } finally {
+    endSessionBtn.disabled = false;
+    endSessionBtn.textContent = '✕ End';
+  }
 });
 
 // ============================================================
