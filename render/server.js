@@ -23,15 +23,12 @@ const allowedOrigins = [
 
 const corsOptions = {
     origin: (origin, callback) => {
-        // Allow requests without Origin (curl, Postman, server-to-server)
         if (!origin) {
             return callback(null, true);
         }
-
         if (allowedOrigins.includes(origin)) {
             return callback(null, true);
         }
-
         console.warn(`❌ CORS blocked: ${origin}`);
         return callback(new Error('Not allowed by CORS'));
     },
@@ -44,7 +41,7 @@ const corsOptions = {
     ],
     exposedHeaders: ['Content-Type', 'api-secret'],
     credentials: true,
-    maxAge: 86400 // 24 hours
+    maxAge: 86400
 };
 
 app.use(cors(corsOptions));
@@ -204,7 +201,6 @@ async function setupColabAuth() {
         );
         console.log('✅ Written token.json');
 
-        // Write empty sessions.json - the CLI will manage this
         await fs.writeFile(
             path.join(configDir, 'sessions.json'), 
             JSON.stringify({})
@@ -253,7 +249,6 @@ async function cleanupAllSessionsAndCreateNew() {
     completedExecutions.clear();
     executionQueue.clear();
     
-    // Clear any hanging processes
     for (const [_, process] of executionProcesses) {
         try {
             process.kill('SIGTERM');
@@ -266,6 +261,55 @@ async function cleanupAllSessionsAndCreateNew() {
         await fs.mkdir(SESSIONS_BASE_DIR, { recursive: true });
     } catch (error) {}
     console.log('✅ All sessions cleaned up');
+}
+
+// ============================================
+// SESSION DATA JSON MANAGEMENT
+// ============================================
+
+async function appendSessionData(sessionId, data) {
+    const sessionFolder = path.join(SESSIONS_BASE_DIR, sessionId);
+    const dataFile = path.join(sessionFolder, 'session_data.json');
+    
+    try {
+        let sessionData = {};
+        try {
+            const content = await fs.readFile(dataFile, 'utf8');
+            sessionData = JSON.parse(content);
+        } catch (e) {
+            // File doesn't exist yet
+            sessionData = {
+                sessionId: sessionId,
+                createdAt: new Date().toISOString(),
+                cells: [],
+                totalCells: 0,
+                totalExecutions: 0
+            };
+        }
+        
+        sessionData.cells.push(data);
+        sessionData.totalCells = sessionData.cells.length;
+        sessionData.totalExecutions = sessionData.cells.filter(c => c.type === 'execution').length;
+        sessionData.lastUpdated = new Date().toISOString();
+        
+        await fs.writeFile(dataFile, JSON.stringify(sessionData, null, 2));
+        return sessionData;
+    } catch (error) {
+        console.error(`Failed to append session data for ${sessionId}:`, error.message);
+        return null;
+    }
+}
+
+async function getSessionData(sessionId) {
+    const sessionFolder = path.join(SESSIONS_BASE_DIR, sessionId);
+    const dataFile = path.join(sessionFolder, 'session_data.json');
+    
+    try {
+        const content = await fs.readFile(dataFile, 'utf8');
+        return JSON.parse(content);
+    } catch (e) {
+        return null;
+    }
 }
 
 // ============================================
@@ -285,6 +329,10 @@ function extractApiSecret(req) {
 
 function generateSessionId() {
     return crypto.randomBytes(32).toString('hex');
+}
+
+function formatMemory(bytes) {
+    return (bytes / 1024 / 1024).toFixed(2) + ' MB';
 }
 
 // ============================================
@@ -336,6 +384,13 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
 
     const startedAt = Date.now();
     let process = null;
+    let cellData = {
+        type: 'execution',
+        cellNo: cellNo,
+        startedAt: new Date(startedAt).toISOString(),
+        code: code,
+        status: 'running'
+    };
     
     try {
         if (Buffer.byteLength(code, 'utf8') > MAX_CODE_SIZE) {
@@ -409,13 +464,14 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
         });
 
         const completedAt = Date.now();
+        const executionTime = completedAt - startedAt;
         const output = { 
             status: 'completed', 
             output: result.stdout || '(No output)', 
             error: result.stderr || '',
             startedAt, 
             completedAt,
-            executionTime: completedAt - startedAt
+            executionTime
         };
         
         completedExecutions.set(executionId, output);
@@ -427,6 +483,14 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
             updatedSession.status = 'ready';
             sessions.set(sessionId, updatedSession);
         }
+
+        // Save to session data JSON
+        cellData.status = 'completed';
+        cellData.completedAt = new Date(completedAt).toISOString();
+        cellData.executionTime = executionTime;
+        cellData.output = result.stdout || '(No output)';
+        cellData.error = result.stderr || '';
+        await appendSessionData(sessionId, cellData);
 
         return output;
     } catch (error) {
@@ -448,6 +512,15 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
             updatedSession.status = 'ready';
             sessions.set(sessionId, updatedSession);
         }
+
+        // Save to session data JSON
+        cellData.status = 'failed';
+        cellData.completedAt = new Date(completedAt).toISOString();
+        cellData.executionTime = completedAt - startedAt;
+        cellData.output = error.stdout || '';
+        cellData.error = error.stderr || error.message || String(error);
+        await appendSessionData(sessionId, cellData);
+
         throw error;
     }
 }
@@ -471,6 +544,7 @@ async function backgroundExecution(sessionId, cellNo, code, executionId) {
 // ============================================
 
 app.get('/health', (req, res) => {
+    const memUsage = process.memoryUsage();
     res.json({
         status: 'healthy',
         activeSessions: sessions.size,
@@ -486,7 +560,13 @@ app.get('/health', (req, res) => {
         completedExecutions: completedExecutions.size,
         queuedExecutions: executionQueue.size,
         uptime: process.uptime(),
-        memoryUsage: process.memoryUsage(),
+        memoryUsage: {
+            rss: formatMemory(memUsage.rss),
+            heapTotal: formatMemory(memUsage.heapTotal),
+            heapUsed: formatMemory(memUsage.heapUsed),
+            external: formatMemory(memUsage.external),
+            arrayBuffers: formatMemory(memUsage.arrayBuffers)
+        },
         timestamp: new Date().toISOString(),
         colabBinary: COLAB_BINARY,
         usePythonModule: USE_PYTHON_MODULE,
@@ -494,12 +574,110 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Simple health endpoint for monitoring
 app.get('/health/simple', (req, res) => {
     res.json({
         status: 'up',
         timestamp: new Date().toISOString(),
         sessions: sessions.size
+    });
+});
+
+// ============================================
+// DEBUG ENDPOINTS
+// ============================================
+
+app.get('/debug/sessions', async (req, res) => {
+    const apiSecret = extractApiSecret(req);
+    if (!validateApiSecret(apiSecret)) {
+        return res.status(401).json({ error: 'Invalid API secret' });
+    }
+
+    const memUsage = process.memoryUsage();
+    const sessionData = [];
+    let totalCells = 0;
+    let totalExecutions = 0;
+
+    for (const [id, session] of sessions.entries()) {
+        const dataFile = await getSessionData(id);
+        const cellsCount = dataFile?.cells?.length || 0;
+        const executionsCount = dataFile?.totalExecutions || 0;
+        totalCells += cellsCount;
+        totalExecutions += executionsCount;
+
+        const activeMinutes = ((Date.now() - session.createdAt) / 1000 / 60).toFixed(2);
+        
+        sessionData.push({
+            sessionId: id,
+            colabSession: session.colabSession,
+            status: session.status,
+            createdAt: new Date(session.createdAt).toISOString(),
+            lastActivity: new Date(session.lastActivity).toISOString(),
+            activeMinutes: parseFloat(activeMinutes),
+            cellsExecuted: cellsCount,
+            executions: executionsCount,
+            hasCurrentExecution: !!session.currentExecution,
+            folder: session.folder,
+            dataFileExists: dataFile !== null
+        });
+    }
+
+    res.json({
+        totalSessions: sessions.size,
+        maxSessions: MAX_SESSIONS,
+        sessions: sessionData,
+        memoryUsage: {
+            rss: formatMemory(memUsage.rss),
+            heapTotal: formatMemory(memUsage.heapTotal),
+            heapUsed: formatMemory(memUsage.heapUsed),
+            external: formatMemory(memUsage.external),
+            arrayBuffers: formatMemory(memUsage.arrayBuffers)
+        },
+        totalCellsExecuted: totalCells,
+        totalExecutions: totalExecutions,
+        queuedExecutions: executionQueue.size,
+        completedExecutions: completedExecutions.size,
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/debug/sessions/:sessionId', async (req, res) => {
+    const apiSecret = extractApiSecret(req);
+    if (!validateApiSecret(apiSecret)) {
+        return res.status(401).json({ error: 'Invalid API secret' });
+    }
+
+    const { sessionId } = req.params;
+    const session = sessions.get(sessionId);
+    
+    if (!session) {
+        return res.status(404).json({ error: 'Session not found in memory' });
+    }
+
+    const sessionData = await getSessionData(sessionId);
+    const memUsage = process.memoryUsage();
+
+    res.json({
+        session: {
+            sessionId: sessionId,
+            colabSession: session.colabSession,
+            status: session.status,
+            createdAt: new Date(session.createdAt).toISOString(),
+            lastActivity: new Date(session.lastActivity).toISOString(),
+            activeMinutes: ((Date.now() - session.createdAt) / 1000 / 60).toFixed(2),
+            hasCurrentExecution: !!session.currentExecution,
+            folder: session.folder
+        },
+        sessionData: sessionData,
+        currentExecution: session.currentExecution || null,
+        memoryUsage: {
+            rss: formatMemory(memUsage.rss),
+            heapTotal: formatMemory(memUsage.heapTotal),
+            heapUsed: formatMemory(memUsage.heapUsed),
+            external: formatMemory(memUsage.external),
+            arrayBuffers: formatMemory(memUsage.arrayBuffers)
+        },
+        timestamp: new Date().toISOString()
     });
 });
 
@@ -512,7 +690,6 @@ app.post('/start', async (req, res) => {
     // Check if max sessions reached - kill oldest if needed
     if (sessions.size >= MAX_SESSIONS) {
         console.log(`🧹 ${sessions.size} sessions active, max ${MAX_SESSIONS}`);
-        // Find oldest session (least recently active)
         let oldestSessionId = null;
         let oldestTime = Infinity;
         
@@ -543,8 +720,22 @@ app.post('/start', async (req, res) => {
 
     try {
         await createSessionFolder(sessionId);
+        
+        // Create session data file immediately
+        const initialData = {
+            sessionId: sessionId,
+            createdAt: new Date().toISOString(),
+            cells: [],
+            totalCells: 0,
+            totalExecutions: 0,
+            lastUpdated: new Date().toISOString()
+        };
+        const dataFile = path.join(path.join(SESSIONS_BASE_DIR, sessionId), 'session_data.json');
+        await fs.writeFile(dataFile, JSON.stringify(initialData, null, 2));
+        
         await runColabCli(['new', '--gpu', 'T4', '-s', colabSessionName], 60000);
         
+        // Save session to memory
         sessions.set(sessionId, {
             colabSession: colabSessionName,
             createdAt: Date.now(),
@@ -567,6 +758,7 @@ app.post('/start', async (req, res) => {
         console.error('Session creation failed:', error.message);
         await cleanupSessionFolder(sessionId);
         
+        // The spawn fallback with 10s timeout
         const child = spawn(COLAB_BINARY, USE_PYTHON_MODULE ? ['-m', 'colab_cli', 'new', '--gpu', 'T4', '-s', colabSessionName] : ['new', '--gpu', 'T4', '-s', colabSessionName]);
         let authUrl = null;
         let outputBuffer = '';
@@ -587,10 +779,23 @@ app.post('/start', async (req, res) => {
                 authUrl = match[0].split('"')[0].split("'")[0].split('\n')[0];
                 clearTimeout(timeout);
                 child.kill();
+                
+                // Save session to memory even if auth is needed
+                sessions.set(sessionId, {
+                    colabSession: colabSessionName,
+                    createdAt: Date.now(),
+                    lastActivity: Date.now(),
+                    status: 'auth_required',
+                    currentExecution: null,
+                    folder: path.join(SESSIONS_BASE_DIR, sessionId),
+                    authUrl: authUrl
+                });
+                
                 res.json({
                     success: false,
                     needsAuth: true,
                     authUrl: authUrl,
+                    sessionId: sessionId,
                     message: 'Please authenticate with Google'
                 });
             }
@@ -670,6 +875,16 @@ app.post('/run', async (req, res) => {
         partialError: ''
     };
     sessions.set(sessionId, session);
+
+    // Save cell start to session data
+    const cellStartData = {
+        type: 'execution_start',
+        cellNo: validCellNo,
+        startedAt: new Date().toISOString(),
+        code: code,
+        status: 'started'
+    };
+    await appendSessionData(sessionId, cellStartData);
 
     backgroundExecution(sessionId, validCellNo, code, executionId);
 
@@ -802,7 +1017,6 @@ async function init() {
     
     console.log('✅ Token auto-refresh handled by Colab CLI');
     
-    // Start cleanup
     setTimeout(cleanupIdleSessions, 60 * 60 * 1000);
 
     const PORT = process.env.PORT || 3000;
