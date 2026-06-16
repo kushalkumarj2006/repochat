@@ -246,7 +246,7 @@ print("\\n📝 Usage:")`;
 // ============================================================
 // BACKEND CONFIG
 // ============================================================
-const BACKEND_URL = 'https://repochat-yi7m.onrender.com';
+const BACKEND_URL = 'https://repo-chat-wkqk.onrender.com';
 let SECRET_KEY = localStorage.getItem('askrepo_key') || '';
 
 window.key = function(str) {
