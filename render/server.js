@@ -51,7 +51,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '..')));
 
 // Configuration
-const API_SECRET = process.env.API_SECRET || "kushalkumarjthegreat";
+const API_SECRET = process.env.API_SECRET;
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS) || 3;
 const SESSION_TIMEOUT = 3 * 60 * 60 * 1000; // 3 hours
 const EXECUTION_TIMEOUT = 7200; // 2 hours
