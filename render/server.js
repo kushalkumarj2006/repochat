@@ -1,21 +1,20 @@
 const express = require('express');
-const { spawn, exec } = require('child_process');
+const { spawn } = require('child_process');
 const util = require('util');
 const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 require('dotenv').config();
 
 // ============================================
-// CONFIGURATION WITH STRICT VALIDATION
+// CONFIGURATION
 // ============================================
 const app = express();
 
-// Security Middleware
+// Security Middleware (basic)
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -28,162 +27,29 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
-// CORS - Restricted to trusted origins only
-const trustedOrigins = (process.env.TRUSTED_ORIGINS || 'http://localhost:3000,https://your-frontend.com').split(',');
-app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    if (trustedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'api-secret', 'x-api-secret', 'Authorization'],
-  maxAge: 86400 // 24 hours
-}));
-
-// Rate Limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const strictLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10, // strict limit for sensitive endpoints
-  message: 'Rate limit exceeded. Please try again later.',
-});
-
-app.use(limiter);
-app.use(express.json({ limit: '1mb' })); // Reduced from 10mb
+// CORS - Open for personal use
+app.use(cors());
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '..')));
 
 // ============================================
-// STRICT ENVIRONMENT VALIDATION
+// CONFIGURATION
 // ============================================
-const requiredEnvVars = ['API_SECRET', 'COLAB_AUTH_TOKEN'];
-const missingVars = requiredEnvVars.filter(v => !process.env[v]);
-if (missingVars.length > 0) {
-  console.error(`❌ Missing required environment variables: ${missingVars.join(', ')}`);
-  // In production, we should fail fast
-  if (process.env.NODE_ENV === 'production') {
-    process.exit(1);
-  }
-}
-
-// API Secret - MUST be set in production
-const API_SECRET = process.env.API_SECRET;
-if (!API_SECRET || API_SECRET === 'kushalkumarjthegreat') {
-  console.warn('⚠️ Using default API_SECRET. This is NOT secure for production!');
-  if (process.env.NODE_ENV === 'production') {
-    console.error('❌ Production environment requires a secure API_SECRET');
-    process.exit(1);
-  }
-}
-
-// Configuration with validation
-const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS) || 2;
-const SESSION_TIMEOUT = 3 * 60 * 60 * 1000;
-const EXECUTION_TIMEOUT = 7200;
-const MAX_CODE_SIZE = 1 * 1024 * 1024; // 1MB - reduced from 3MB
-const COMPLETED_EXECUTIONS_TTL = 10 * 60 * 1000;
-const POLL_INTERVAL = 5000; // 5 seconds - more reasonable
+const API_SECRET = process.env.API_SECRET || "kushalkumarjthegreat";
+const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS) || 3;
+const SESSION_TIMEOUT = 3 * 60 * 60 * 1000; // 3 hours
+const EXECUTION_TIMEOUT = 7200; // 2 hours
+const MAX_CODE_SIZE = 1 * 1024 * 1024; // 1MB
+const COMPLETED_EXECUTIONS_TTL = 10 * 60 * 1000; // 10 minutes
+const POLL_INTERVAL = 10000; // 10 seconds
 
 // Sessions directory
 const SESSIONS_BASE_DIR = path.join(os.tmpdir(), 'colab_sessions');
 
 // ============================================
-// TOKEN REFRESH SYSTEM
-// ============================================
-const execPromise = util.promisify(exec);
-
-async function refreshColabToken() {
-    console.log('🔄 Refreshing Colab token...');
-    if (!process.env.COLAB_REFRESH_DATA) {
-        console.error('❌ COLAB_REFRESH_DATA not found');
-        return false;
-    }
-
-    try {
-        const refreshData = JSON.parse(process.env.COLAB_REFRESH_DATA);
-        const pythonScript = `
-import json
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-try:
-    data = ${JSON.stringify(refreshData)}
-    creds = Credentials(
-        token=None,
-        refresh_token=data['refresh_token'],
-        token_uri=data['token_uri'],
-        client_id=data['client_id'],
-        client_secret=data['client_secret']
-    )
-    creds.refresh(Request())
-    print(json.dumps({
-        'token': creds.token,
-        'expiry': creds.expiry.isoformat()
-    }))
-except Exception as e:
-    print(f'ERROR: {e}')
-`;
-
-        const { stdout } = await execPromise(`python3 -c '${pythonScript}'`);
-        if (stdout.includes('ERROR')) {
-            console.error('❌ Token refresh failed:', stdout);
-            return false;
-        }
-
-        const tokenData = JSON.parse(stdout.trim());
-        const fullToken = { ...refreshData, token: tokenData.token, expiry: tokenData.expiry };
-        
-        // Update environment
-        process.env.COLAB_AUTH_TOKEN = JSON.stringify(fullToken);
-        
-        // Persist token
-        const configDir = path.join(os.homedir(), '.config/colab-cli');
-        await fs.mkdir(configDir, { recursive: true });
-        await fs.writeFile(
-            path.join(configDir, 'token.json'),
-            JSON.stringify(fullToken, null, 2)
-        );
-
-        console.log('✅ Token refreshed successfully');
-        return true;
-    } catch (error) {
-        console.error('❌ Token refresh error:', error);
-        return false;
-    }
-}
-
-async function isTokenValid() {
-    try {
-        const { stdout } = await execPromise('colab whoami', { timeout: 10000 });
-        return stdout.includes('Expires in') && !stdout.includes('ERROR');
-    } catch {
-        return false;
-    }
-}
-
-async function ensureValidToken() {
-    if (await isTokenValid()) {
-        console.log('✅ Token is valid');
-        return true;
-    }
-    console.log('⚠️ Token invalid or expired, refreshing...');
-    return await refreshColabToken();
-}
-
-// ============================================
 // COLAB BINARY DISCOVERY
 // ============================================
+const execPromise = util.promisify(require('child_process').exec);
 let COLAB_BINARY = 'colab';
 let USE_PYTHON_MODULE = false;
 
@@ -191,7 +57,6 @@ async function findColabBinaryRecursive() {
     const { execSync } = require('child_process');
     console.log('🔍 Searching for colab binary...');
 
-    // Try 'which' first
     try {
         const whichPath = execSync('which colab 2>/dev/null || echo ""', { encoding: 'utf8', timeout: 5000 }).trim();
         if (whichPath && whichPath !== '') {
@@ -200,7 +65,6 @@ async function findColabBinaryRecursive() {
         }
     } catch {}
 
-    // Try pip location
     try {
         const pipPath = execSync('pip3 show google-colab-cli | grep Location | cut -d" " -f2', { encoding: 'utf8', timeout: 5000 }).trim();
         if (pipPath) {
@@ -212,7 +76,6 @@ async function findColabBinaryRecursive() {
         }
     } catch {}
 
-    // Search common paths
     const searchPaths = [
         '/opt/render/.local/bin',
         '/usr/local/bin',
@@ -256,13 +119,90 @@ async function initColabBinary() {
 }
 
 // ============================================
-// SECURE COLAB CLI RUNNER
+// TOKEN REFRESH
+// ============================================
+async function refreshColabToken() {
+    console.log('🔄 Refreshing Colab token...');
+    if (!process.env.COLAB_REFRESH_DATA) {
+        console.error('❌ COLAB_REFRESH_DATA not found');
+        return false;
+    }
+
+    try {
+        const refreshData = JSON.parse(process.env.COLAB_REFRESH_DATA);
+        const pythonScript = `
+import json
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+try:
+    data = ${JSON.stringify(refreshData)}
+    creds = Credentials(
+        token=None,
+        refresh_token=data['refresh_token'],
+        token_uri=data['token_uri'],
+        client_id=data['client_id'],
+        client_secret=data['client_secret']
+    )
+    creds.refresh(Request())
+    print(json.dumps({
+        'token': creds.token,
+        'expiry': creds.expiry.isoformat()
+    }))
+except Exception as e:
+    print(f'ERROR: {e}')
+`;
+
+        const { stdout } = await execPromise(`python3 -c '${pythonScript}'`);
+        if (stdout.includes('ERROR')) {
+            console.error('❌ Token refresh failed:', stdout);
+            return false;
+        }
+
+        const tokenData = JSON.parse(stdout.trim());
+        const fullToken = { ...refreshData, token: tokenData.token, expiry: tokenData.expiry };
+        
+        process.env.COLAB_AUTH_TOKEN = JSON.stringify(fullToken);
+        
+        const configDir = path.join(os.homedir(), '.config/colab-cli');
+        await fs.mkdir(configDir, { recursive: true });
+        await fs.writeFile(
+            path.join(configDir, 'token.json'),
+            JSON.stringify(fullToken, null, 2)
+        );
+
+        console.log('✅ Token refreshed successfully');
+        return true;
+    } catch (error) {
+        console.error('❌ Token refresh error:', error);
+        return false;
+    }
+}
+
+async function isTokenValid() {
+    try {
+        const { stdout } = await execPromise('colab whoami', { timeout: 10000 });
+        return stdout.includes('Expires in') && !stdout.includes('ERROR');
+    } catch {
+        return false;
+    }
+}
+
+async function ensureValidToken() {
+    if (await isTokenValid()) {
+        console.log('✅ Token is valid');
+        return true;
+    }
+    console.log('⚠️ Token invalid or expired, refreshing...');
+    return await refreshColabToken();
+}
+
+// ============================================
+// COLAB CLI RUNNER
 // ============================================
 async function runColabCli(args, timeout = 30000) {
     await ensureValidToken();
     
     return new Promise((resolve, reject) => {
-        // Use spawn with arguments array - MORE SECURE than string concatenation
         let command;
         let spawnArgs;
         
@@ -278,7 +218,7 @@ async function runColabCli(args, timeout = 30000) {
         
         const child = spawn(command, spawnArgs, {
             timeout,
-            shell: false, // DON'T use shell for security
+            shell: false,
             stdio: ['ignore', 'pipe', 'pipe'],
             maxBuffer: 50 * 1024 * 1024
         });
@@ -323,7 +263,6 @@ async function setupColabAuth() {
 
     try {
         let rawToken = process.env.COLAB_AUTH_TOKEN.trim();
-        // Remove surrounding quotes if present
         if ((rawToken.startsWith("'") && rawToken.endsWith("'")) || 
             (rawToken.startsWith('"') && rawToken.endsWith('"'))) {
             rawToken = rawToken.slice(1, -1);
@@ -340,7 +279,6 @@ async function setupColabAuth() {
             JSON.stringify(tokenData, null, 2)
         );
 
-        // Initialize sessions file
         const sessionsConfig = {};
         await fs.writeFile(
             path.join(configDir, 'sessions.json'),
@@ -356,65 +294,12 @@ async function setupColabAuth() {
 }
 
 // ============================================
-// SESSION MANAGEMENT WITH PERSISTENCE
+// SESSION MANAGEMENT
 // ============================================
 const sessions = new Map();
 const executionQueue = new Set();
 const completedExecutions = new Map();
 const executionProcesses = new Map();
-
-// Persistence - Save state periodically
-async function persistState() {
-    try {
-        const state = {
-            sessions: Array.from(sessions.entries()).map(([id, data]) => ({
-                id,
-                ...data,
-                // Don't persist PIDs or processes
-                currentExecution: data.currentExecution ? {
-                    ...data.currentExecution,
-                    // Remove sensitive data
-                } : null
-            })),
-            completedExecutions: Array.from(completedExecutions.entries())
-        };
-        await fs.writeFile(
-            path.join(SESSIONS_BASE_DIR, 'state.json'),
-            JSON.stringify(state, null, 2)
-        );
-    } catch (error) {
-        console.error('Failed to persist state:', error);
-    }
-}
-
-// Restore state on startup
-async function restoreState() {
-    try {
-        const statePath = path.join(SESSIONS_BASE_DIR, 'state.json');
-        const data = await fs.readFile(statePath, 'utf8');
-        const state = JSON.parse(data);
-        
-        // Restore sessions
-        for (const sessionData of state.sessions || []) {
-            const { id, ...rest } = sessionData;
-            sessions.set(id, {
-                ...rest,
-                // Don't restore if session is stale
-                status: 'ready',
-                currentExecution: null
-            });
-        }
-        
-        // Restore completed executions
-        for (const [id, execData] of state.completedExecutions || []) {
-            completedExecutions.set(id, execData);
-        }
-        
-        console.log(`✅ Restored ${sessions.size} sessions and ${completedExecutions.size} executions`);
-    } catch (error) {
-        console.log('No state to restore or state corrupted:', error.message);
-    }
-}
 
 async function createSessionFolder(sessionId) {
     const sessionFolder = path.join(SESSIONS_BASE_DIR, sessionId);
@@ -432,46 +317,47 @@ async function cleanupSessionFolder(sessionId) {
     }
 }
 
-async function cleanupAllSessionsAndCreateNew() {
-    console.log('🧹 Cleaning up all sessions...');
-    const currentSessions = Array.from(sessions.keys());
+async function killOldestSessionAndCreate() {
+    console.log(`🧹 ${sessions.size} sessions active, max ${MAX_SESSIONS}`);
     
-    for (const sessionId of currentSessions) {
-        const session = sessions.get(sessionId);
-        if (session) {
-            try {
-                await runColabCli(['stop', '-s', session.colabSession], 10000);
-            } catch {}
-            await cleanupSessionFolder(sessionId);
+    // Find oldest session (least recently active)
+    let oldestSessionId = null;
+    let oldestTime = Infinity;
+    
+    for (const [sessionId, session] of sessions.entries()) {
+        if (session.lastActivity < oldestTime) {
+            oldestTime = session.lastActivity;
+            oldestSessionId = sessionId;
         }
     }
     
-    sessions.clear();
-    completedExecutions.clear();
-    executionQueue.clear();
-    
-    // Also clear any hanging processes
-    for (const [_, process] of executionProcesses) {
+    if (oldestSessionId) {
+        console.log(`🗑️ Killing oldest session: ${oldestSessionId}`);
+        const session = sessions.get(oldestSessionId);
         try {
-            process.kill('SIGTERM');
-        } catch {}
+            await runColabCli(['stop', '-s', session.colabSession], 10000);
+        } catch (error) {
+            console.log(`⚠️ Could not stop session remotely: ${error.message}`);
+        }
+        await cleanupSessionFolder(oldestSessionId);
+        sessions.delete(oldestSessionId);
+        console.log(`✅ Removed session ${oldestSessionId}`);
     }
-    executionProcesses.clear();
-    
-    try {
-        await fs.rm(SESSIONS_BASE_DIR, { recursive: true, force: true });
-        await fs.mkdir(SESSIONS_BASE_DIR, { recursive: true });
-    } catch {}
-    
-    console.log('✅ All sessions cleaned up');
+}
+
+function generateSessionId() {
+    return crypto.randomBytes(32).toString('hex');
+}
+
+function generateExecutionId() {
+    return crypto.randomBytes(16).toString('hex');
 }
 
 // ============================================
-// API HELPERS - IMPROVED SECURITY
+// API HELPERS
 // ============================================
 function validateApiSecret(input) {
     if (!input) return false;
-    // Constant-time comparison to prevent timing attacks
     try {
         return crypto.timingSafeEqual(
             Buffer.from(input),
@@ -483,7 +369,6 @@ function validateApiSecret(input) {
 }
 
 function extractApiSecret(req) {
-    // Check multiple sources
     const sources = [
         req.body?.api_secret,
         req.headers['api-secret'],
@@ -499,16 +384,8 @@ function extractApiSecret(req) {
     return null;
 }
 
-function generateSessionId() {
-    return crypto.randomBytes(32).toString('hex');
-}
-
-function generateExecutionId() {
-    return crypto.randomBytes(16).toString('hex');
-}
-
 // ============================================
-// SECURE CODE EXECUTION
+// CODE EXECUTION
 // ============================================
 async function executeCodeInColab(sessionId, cellNo, code, executionId) {
     const session = sessions.get(sessionId);
@@ -518,37 +395,14 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
     let process = null;
 
     try {
-        // Validate code size
         if (Buffer.byteLength(code, 'utf8') > MAX_CODE_SIZE) {
             throw new Error(`Code exceeds ${MAX_CODE_SIZE} bytes`);
-        }
-
-        // Sanitize code - reject obviously dangerous patterns
-        const dangerousPatterns = [
-            /rm\s+-rf/,
-            /sudo/,
-            /chmod\s+777/,
-            /etc\/passwd/,
-            /\/dev\/null/,
-            /wget.*\|.*sh/,
-            /curl.*\|.*sh/,
-            /eval\s*\(/,
-            /exec\s*\(/,
-            /system\s*\(/,
-            /popen\s*\(/
-        ];
-
-        for (const pattern of dangerousPatterns) {
-            if (pattern.test(code)) {
-                throw new Error('Potentially dangerous code detected');
-            }
         }
 
         const sessionFolder = path.join(SESSIONS_BASE_DIR, sessionId);
         const codeFile = path.join(sessionFolder, `code_${cellNo}.py`);
         await fs.writeFile(codeFile, code, 'utf8');
 
-        // Execute using file input instead of echo for better security
         let command;
         let args;
 
@@ -562,17 +416,15 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
 
         console.log(`Executing code file: ${codeFile}`);
 
-        // Use spawn with file input
         process = spawn(command, args, {
             timeout: EXECUTION_TIMEOUT * 1000,
             maxBuffer: 50 * 1024 * 1024,
-            shell: false, // NO shell
-            stdio: ['pipe', 'pipe', 'pipe'] // pipe stdin for code
+            shell: false,
+            stdio: ['pipe', 'pipe', 'pipe']
         });
 
         executionProcesses.set(executionId, process);
 
-        // Write code to stdin
         process.stdin.write(code);
         process.stdin.end();
 
@@ -586,7 +438,6 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
             if (currentSession && currentSession.currentExecution?.executionId === executionId) {
                 currentSession.currentExecution.partialOutput = stdout;
                 sessions.set(sessionId, currentSession);
-                persistState();
             }
         });
 
@@ -626,14 +477,12 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
 
         completedExecutions.set(executionId, output);
         executionProcesses.delete(executionId);
-        persistState();
 
         const updatedSession = sessions.get(sessionId);
         if (updatedSession && updatedSession.currentExecution?.executionId === executionId) {
             updatedSession.currentExecution = null;
             updatedSession.status = 'ready';
             sessions.set(sessionId, updatedSession);
-            persistState();
         }
 
         return output;
@@ -651,14 +500,12 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
 
         completedExecutions.set(executionId, failureResult);
         executionProcesses.delete(executionId);
-        persistState();
 
         const updatedSession = sessions.get(sessionId);
         if (updatedSession && updatedSession.currentExecution?.executionId === executionId) {
             updatedSession.currentExecution = null;
             updatedSession.status = 'ready';
             sessions.set(sessionId, updatedSession);
-            persistState();
         }
 
         throw error;
@@ -689,8 +536,18 @@ app.get('/health', async (req, res) => {
         tokenValid: valid,
         activeSessions: sessions.size,
         maxSessions: MAX_SESSIONS,
+        sessionDetails: Array.from(sessions.entries()).map(([id, s]) => ({
+            id: id.slice(0, 12) + '...',
+            colabSession: s.colabSession,
+            createdAt: new Date(s.createdAt).toISOString(),
+            lastActivity: new Date(s.lastActivity).toISOString(),
+            status: s.status,
+            hasCurrentExecution: !!s.currentExecution
+        })),
         completedExecutions: completedExecutions.size,
+        queuedExecutions: executionQueue.size,
         uptime: process.uptime(),
+        memoryUsage: process.memoryUsage(),
         timestamp: new Date().toISOString(),
         colabBinary: COLAB_BINARY,
         usePythonModule: USE_PYTHON_MODULE,
@@ -698,31 +555,26 @@ app.get('/health', async (req, res) => {
     });
 });
 
-// Health endpoint for status monitoring (no auth required)
 app.get('/health/simple', (req, res) => {
     res.json({
         status: 'up',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        sessions: sessions.size
     });
 });
 
-app.post('/start', strictLimiter, async (req, res) => {
+app.post('/start', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
-    // Check session limit
+    // If max sessions reached, kill oldest
     if (sessions.size >= MAX_SESSIONS) {
-        return res.status(429).json({
-            error: 'Maximum sessions reached',
-            maxSessions: MAX_SESSIONS,
-            activeSessions: sessions.size
-        });
+        await killOldestSessionAndCreate();
     }
 
     console.log(`📝 New session request received`);
-
     const sessionId = generateSessionId();
     const colabSessionName = `colab_${sessionId.substring(0, 12)}`;
 
@@ -736,18 +588,17 @@ app.post('/start', strictLimiter, async (req, res) => {
             lastActivity: Date.now(),
             status: 'ready',
             currentExecution: null,
-            folder: path.join(SESSIONS_BASE_DIR, sessionId),
-            // Track owner IP for security
-            clientIp: req.ip || req.connection.remoteAddress
+            folder: path.join(SESSIONS_BASE_DIR, sessionId)
         };
 
         sessions.set(sessionId, session);
-        await persistState();
 
         res.json({
             success: true,
             sessionId: sessionId,
             expiresIn: SESSION_TIMEOUT,
+            activeSessions: sessions.size,
+            maxSessions: MAX_SESSIONS,
             message: 'Session created successfully'
         });
 
@@ -755,7 +606,6 @@ app.post('/start', strictLimiter, async (req, res) => {
         console.error('Session creation failed:', error.message);
         await cleanupSessionFolder(sessionId);
         
-        // Try to detect if auth is needed
         if (error.stderr && error.stderr.includes('authenticate')) {
             return res.status(401).json({
                 error: 'Authentication required',
@@ -791,15 +641,13 @@ app.post('/keepalive', async (req, res) => {
         await runColabCli(['sessions'], 10000);
         session.lastActivity = Date.now();
         sessions.set(sessionId, session);
-        await persistState();
-
         res.json({ success: true, message: 'Session kept alive' });
     } catch (error) {
         res.status(500).json({ error: 'Keepalive failed', details: error.message });
     }
 });
 
-app.post('/run', strictLimiter, async (req, res) => {
+app.post('/run', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
         return res.status(401).json({ error: 'Invalid API secret' });
@@ -810,7 +658,6 @@ app.post('/run', strictLimiter, async (req, res) => {
         return res.status(400).json({ error: 'Missing required fields: sessionId, code, cellNo' });
     }
 
-    // Validate cellNo
     const validCellNo = parseInt(cellNo, 10);
     if (isNaN(validCellNo) || validCellNo < 1 || validCellNo > 100) {
         return res.status(400).json({ error: 'cellNo must be between 1 and 100' });
@@ -842,9 +689,7 @@ app.post('/run', strictLimiter, async (req, res) => {
     };
 
     sessions.set(sessionId, session);
-    await persistState();
 
-    // Execute in background
     backgroundExecution(sessionId, validCellNo, code, executionId);
 
     res.json({
@@ -867,7 +712,6 @@ app.post('/status', async (req, res) => {
         return res.status(400).json({ error: 'Missing required fields: sessionId, executionId' });
     }
 
-    // Check completed executions first
     if (completedExecutions.has(executionId)) {
         const record = completedExecutions.get(executionId);
         return res.json({
@@ -908,7 +752,6 @@ app.post('/status/ack', async (req, res) => {
     const { executionId } = req.body;
     if (executionId && completedExecutions.has(executionId)) {
         completedExecutions.delete(executionId);
-        await persistState();
         res.json({ success: true, message: 'Acknowledged' });
     } else {
         res.json({ success: false, message: 'Execution not found' });
@@ -931,13 +774,10 @@ app.delete('/session/:sessionId', async (req, res) => {
         await runColabCli(['stop', '-s', session.colabSession], 30000);
         await cleanupSessionFolder(sessionId);
         sessions.delete(sessionId);
-        await persistState();
         res.json({ success: true, message: 'Session terminated' });
     } catch (error) {
-        // Even if stop fails, clean up local resources
         await cleanupSessionFolder(sessionId);
         sessions.delete(sessionId);
-        await persistState();
         res.json({
             success: true,
             warning: 'Session removed from tracking, but may still exist remotely'
@@ -946,7 +786,7 @@ app.delete('/session/:sessionId', async (req, res) => {
 });
 
 // ============================================
-// CLEANUP AND MAINTENANCE
+// CLEANUP
 // ============================================
 async function cleanupIdleSessions() {
     const now = Date.now();
@@ -964,16 +804,11 @@ async function cleanupIdleSessions() {
     }
 
     if (cleaned > 0) {
-        console.log(`Cleaned up ${cleaned} idle sessions`);
-        await persistState();
+        console.log(`🧹 Cleaned up ${cleaned} idle sessions`);
     }
 
-    // Schedule next cleanup
-    setTimeout(cleanupIdleSessions, 30 * 60 * 1000); // 30 minutes
+    setTimeout(cleanupIdleSessions, 30 * 60 * 1000);
 }
-
-// Periodic state persistence
-setInterval(persistState, 5 * 60 * 1000); // Every 5 minutes
 
 // Cleanup completed executions
 setInterval(() => {
@@ -986,7 +821,27 @@ setInterval(() => {
         }
     }
     if (removed > 0) {
-        console.log(`Cleaned up ${removed} completed executions`);
+        console.log(`🧹 Cleaned up ${removed} completed executions`);
+    }
+}, 5 * 60 * 1000);
+
+// Cleanup hanging processes (safety net)
+setInterval(() => {
+    const now = Date.now();
+    for (const [execId, process] of executionProcesses.entries()) {
+        try {
+            process.kill(0);
+            const session = Array.from(sessions.values()).find(s => 
+                s.currentExecution?.executionId === execId
+            );
+            if (session && Date.now() - session.currentExecution.startedAt > 2.5 * 60 * 60 * 1000) {
+                console.log(`⚠️ Killing hanging process ${execId}`);
+                process.kill('SIGTERM');
+                executionProcesses.delete(execId);
+            }
+        } catch {
+            executionProcesses.delete(execId);
+        }
     }
 }, 5 * 60 * 1000);
 
@@ -997,22 +852,10 @@ async function init() {
     console.log('🚀 Initializing Colab Orchestrator...');
 
     try {
-        // Setup directories
         await fs.mkdir(SESSIONS_BASE_DIR, { recursive: true });
-
-        // Find colab binary
         await initColabBinary();
-
-        // Setup authentication
         await setupColabAuth();
-
-        // Ensure valid token
         await ensureValidToken();
-
-        // Restore state if exists
-        await restoreState();
-
-        // Start cleanup
         setTimeout(cleanupIdleSessions, 5 * 60 * 1000);
 
         const PORT = process.env.PORT || 3000;
@@ -1022,13 +865,13 @@ async function init() {
             console.log(`📁 Sessions folder: ${SESSIONS_BASE_DIR}`);
             console.log(`🔧 Colab binary: ${COLAB_BINARY} ${USE_PYTHON_MODULE ? '(-m colab_cli)' : ''}`);
             console.log(`📊 Max sessions: ${MAX_SESSIONS}`);
-            console.log(`🔐 API Secret: ${API_SECRET !== 'kushalkumarjthegreat' ? '✅ Custom' : '⚠️ Default - CHANGE THIS!'}`);
+            console.log(`🔐 API Secret: ${API_SECRET !== 'kushalkumarjthegreat' ? '✅ Custom' : '⚠️ Default'}`);
             console.log(`🔑 Colab Auth: ${process.env.COLAB_AUTH_TOKEN ? '✅ Token configured' : '⚠️ No token'}`);
             console.log(`🔄 Token auto-refresh: Enabled`);
             console.log(`⏰ Session timeout: ${SESSION_TIMEOUT / 1000 / 60 / 60} hours`);
             console.log(`⏱️  Execution timeout: ${EXECUTION_TIMEOUT / 60} minutes`);
-            console.log(`🔒 Security: CORS restricted, Rate limiting enabled, Code sanitization active`);
-            console.log(`🗑️  Sessions cleaned on each /start request\n`);
+            console.log(`📋 Poll interval: ${POLL_INTERVAL / 1000} seconds`);
+            console.log(`🗑️  Auto-cleanup: ${sessions.size > 0 ? `${sessions.size} sessions active` : 'No active sessions'}\n`);
             console.log(`🌐 Open: http://localhost:${PORT}`);
         });
     } catch (error) {
@@ -1040,8 +883,6 @@ async function init() {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
     console.log('Received SIGTERM, cleaning up...');
-    await persistState();
-    // Clean up all sessions
     for (const [sessionId, session] of sessions.entries()) {
         try {
             await runColabCli(['stop', '-s', session.colabSession], 5000);
@@ -1054,7 +895,6 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
     console.log('Received SIGINT, cleaning up...');
-    await persistState();
     process.exit(0);
 });
 
