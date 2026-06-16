@@ -1,7 +1,7 @@
 {
-    "name": "colab-orchestrator",
+    "name": "repochat",
     "version": "3.1.0",
-    "description": "Run Python code on Google Colab via API - Security Hardened",
+    "description": "Ask questions about any github repo, google colab integrated backend",
     "main": "server.js",
     "scripts": {
         "start": "node server.js",
