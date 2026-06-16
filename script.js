@@ -1,5 +1,5 @@
 function wakeUp(attempt = 1) {
-  fetch('https://your-app.onrender.com/health')
+  fetch('https://repo-chat-wkqk.onrender.com/health')
     .then(res => res.text())
     .then(data => console.log('Response:', data))
     .catch(() => {
