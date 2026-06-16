@@ -1,8 +1,8 @@
 function wakeUp(attempt = 1) {
-  fetch('https://repo-chat-wkqk.onrender.com/health')
-    .then(() => console.log('✅ Wake-up ping sent'))
+  fetch('https://your-app.onrender.com/health')
+    .then(res => res.text())
+    .then(data => console.log('Response:', data))
     .catch(() => {
-      console.log(`⏳ Attempt ${attempt} failed, retrying...`);
       if (attempt < 3) setTimeout(() => wakeUp(attempt + 1), 2000);
     });
 }
