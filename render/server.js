@@ -48,7 +48,7 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static(path.join(__dirname, '..')));
+//app.use(express.static(path.join(__dirname, '..')));
 
 // Configuration
 const API_SECRET = process.env.API_SECRET;
