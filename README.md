@@ -599,6 +599,6 @@ MIT License — see [LICENSE](LICENSE) for details.
 **AskRepo · Codebase Q&A**
 
 [![GitHub](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/kushalkumarj2006/repochat)
-[![Render](https://img.shields.io/badge/Render-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://colabbridge-jyba.onrender.com)
+[![Render](https://img.shields.io/badge/Render-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://colabbridge-jyba.onrender.com/health)
 
 </div>
