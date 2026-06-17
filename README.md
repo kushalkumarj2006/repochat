@@ -1,5 +1,10 @@
 # AskRepo · Codebase Q&A
 
+[![License](https://img.shields.io/github/license/kushalkumarj2006/repochat)](https://github.com/kushalkumarj2006/repochat/blob/main/LICENSE)
+[![GitHub Pages](https://img.shields.io/badge/GitHub-Pages-blue)](https://kushalkumarj2006.github.io/repochat)
+[![Last Commit](https://img.shields.io/github/last-commit/kushalkumarj2006/repochat)](https://github.com/kushalkumarj2006/repochat/commits/main)
+[![Repo Size](https://img.shields.io/github/repo-size/kushalkumarj2006/repochat)](https://github.com/kushalkumarj2006/repochat)
+
 > A modern, intuitive web interface for querying codebases using local LLMs via Ollama, powered by ColabBridge.
 
 ---
