@@ -1,29 +1,7 @@
 /* ==========================================================================
    REPOCHAT · LIQUID GLASS REDESIGN (v2)
-   Zero JS changes · WCAG AA · prefers‑reduced‑motion · responsive
    ==========================================================================
-   TABLE OF CONTENTS
-   -----------------
-   1.  Design Tokens (CSS Custom Properties)
-   2.  Reset & Base
-   3.  Animated Glass Scene (background blobs)
-   4.  Glass Utility Classes
-   5.  Focus Visible
-   6.  Scrollbar
-   7.  Header
-   8.  Hamburger
-   9.  Setup Panel
-  10.  Setup Cards (glass sections)
-  11.  Buttons
-  12.  Inputs
-  13.  Chat Container
-  14.  Chat Messages & Glass Bubbles
-  15.  Chat Input Area
-  16.  Responsive
-  17.  prefers-reduced-motion
-  18.  prefers-reduced-transparency
-  19.  @supports fallback (old browsers)
-   ========================================================================== */
+*/
 
 /* --------------------------------------------------------------------------
    1. DESIGN TOKENS
