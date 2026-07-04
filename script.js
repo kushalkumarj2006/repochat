@@ -2,7 +2,7 @@
 // BACKEND CONFIG - UPDATED FOR NEW BACKEND URL
 // ============================================================
 const BACKEND_URL = 'https://tempo-agxk.onrender.com';
-let SECRET_KEY = localStorage.getItem('askrepo_key') || '';
+let SECRET_KEY = localStorage.getItem('askrepo_key') || ''; 
 window.key = function(str) {
   if (str && str.trim()) {
     SECRET_KEY = str.trim();
